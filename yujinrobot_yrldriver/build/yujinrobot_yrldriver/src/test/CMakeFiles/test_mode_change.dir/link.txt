@@ -1,0 +1,1 @@
+/usr/bin/c++    -std=c++11  -rdynamic CMakeFiles/test_mode_change.dir/test_mode_change.cpp.o  -o test_mode_change  -Wl,-rpath,/home/iclab/test/src/driver_general/yujinrobot_yrldriver/build/yujinrobot_yrldriver/src/lib: ../lib/libyujinrobot_yrldriver.so -lpthread -lrt -ldl 
