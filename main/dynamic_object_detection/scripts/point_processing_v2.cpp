@@ -10,14 +10,13 @@
 // 作為給下一個人的警訊：
 // 總共浪費時間：87
 
-
+#include <iostream>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/crop_box.h>
-
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/sample_consensus/sac_model_line.h>
@@ -39,7 +38,7 @@
 #include <pcl/features/normal_3d.h>
 #include <pcl/common/transforms.h>
 #include <pcl/visualization/pcl_visualizer.h>
-#include <iostream>
+
 #include <ctime>
 #include <unistd.h>
 #include <std_msgs/Header.h>
@@ -50,9 +49,10 @@
 #include <dynamic_object_detection/pointcloudConfig.h>
 #include <tf/transform_broadcaster.h>
 #include <pcl/registration/icp.h>
+#include <opencv2/opencv.hpp>
 
 ros::Publisher cloud_pub;
-ros::Publisher marker_pub;
+// ros::Publisher marker_pub;
 ros::Publisher marker_pub2;
 ros::Subscriber sub;
 std_msgs::Header msg_header;
@@ -83,7 +83,7 @@ private:
     int MeanK = 50;
     int MulThresh = 10;
     float RadiusSearch = 0.04;
-    int MinNeighborsInRadius = 5;
+    int MinNeighborsInRadius = 2;
     std_msgs::Header header;
     int MAXClusterSize = 20;
     int MinClusterSize = 10;
@@ -96,29 +96,54 @@ public:
     std::vector<pcl::PointIndices> clusterIndicesBIG[5];
     std::vector<pcl::PointIndices>::iterator BIG[5];
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;          // 原始處理完的資料
+    std::deque<pcl::PointCloud<pcl::PointXYZ>::Ptr> buffer;
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr outputcloud; // 輸出資料
-    visualization_msgs::MarkerArray::Ptr marker_array;  // maker data
+    // visualization_msgs::MarkerArray::Ptr marker_array;  // maker data
+    visualization_msgs::MarkerArray::Ptr marker_static;  // maker data
+    visualization_msgs::MarkerArray::Ptr marker_dynamic;  // maker data
     pcl::ModelCoefficients::Ptr coefficients;           // 地面斜線參數
     pcl::PointIndices::Ptr inliers;                     // 地面點雲
     pcl::PointCloud<pcl::Normal>::Ptr cloud_normals;
     std::list<pcl::Normal> normal_list;
+    const int mapSize = 6;  // 地图大小（米）
+    const float pixelResolution = 0.1;  // 每个像素代表的距离（米）
+    const int frameCount = 10;  // 近10帧点云数据
+    const int minValidFrames = 6;  // 最小有效帧数
+    std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> slidingWindow;
+    int mapWidth;
+    int mapHeight;
+    std::vector<float> mapData;
+    int validFrames = 0;
+    std::list<std::array<double, 8>> frame;
+    struct Point {
+        double x, y;
+    };
 
     // 初始化參數
     PointCloud()
     {
-
         cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
         outputcloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
-        marker_array.reset(new visualization_msgs::MarkerArray);
+        // marker_array.reset(new visualization_msgs::MarkerArray);
+        marker_static.reset(new visualization_msgs::MarkerArray);
+        marker_dynamic.reset(new visualization_msgs::MarkerArray);
         coefficients.reset(new pcl::ModelCoefficients);
         inliers.reset(new pcl::PointIndices);
         cloud_normals.reset(new pcl::PointCloud<pcl::Normal>);
+        
+        mapWidth = static_cast<int>(mapSize / pixelResolution);
+        mapHeight = static_cast<int>(mapSize / pixelResolution);
+        mapData.resize(mapWidth * mapHeight, -1.0f);
+        
     }
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr start(const sensor_msgs::PointCloud2::ConstPtr &input_cloud, std_msgs::Header header_msg)
     {
+        frame.clear();
         outputcloud->clear();
-        clusterIndices.clear();
+        // marker_array->markers.clear();
+        marker_static->markers.clear();
+        marker_dynamic->markers.clear();
         // clusterIndicesBIG.clear();
         for (int i = 0; i < 5; i++)
         {
@@ -177,12 +202,12 @@ public:
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloudpoint;
         cloudpoint.reset(new pcl::PointCloud<pcl::PointXYZ>);
         double z,x,y;
-        printf("%lf",leafsize2d);
+        // printf("%lf",leafsize2d);
         if (is_2D)
         {
             z = 0.0;
-            x = leafsize2d;
-            y = leafsize2d;
+            x = leafsize3d;
+            y = leafsize3d;
         }
         else
         {
@@ -200,7 +225,7 @@ public:
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_copy(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::copyPointCloud(*cloud_data, *cloud_copy);
-        printf("sizeF : %ld\n",cloud_data->size());
+        // printf("sizeF : %ld\n",cloud_data->size());
         sor2.setInputCloud(cloud_data->makeShared());
         sor2.setMeanK(MeanK);               // Set number of neighbors to be considered for averaging
         sor2.setNegative(false);
@@ -313,19 +338,29 @@ public:
     }
 
     // 半徑濾波器
-    void RadiusOutlierRemoval(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data)
-    {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr RadiusOutlierRemoval(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data, int MinNeighbors=0)
+    {   if(MinNeighbors==0){
+        MinNeighbors=MinNeighborsInRadius;
+        }
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloudpoint;
+        cloudpoint.reset(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::RadiusOutlierRemoval<pcl::PointXYZ> outrem;
         outrem.setInputCloud(cloud_data);                     // 将点云输入到滤波器
         outrem.setRadiusSearch(RadiusSearch);                 // 设置近邻点搜索半径
-        outrem.setMinNeighborsInRadius(MinNeighborsInRadius); // 设置查询点最小近邻点数
-        outrem.filter(*cloud_data);
+        outrem.setMinNeighborsInRadius(MinNeighbors);           // 设置查询点最小近邻点数
+        outrem.filter(*cloudpoint);
+        return cloudpoint;
+
     }
 
     // DBSCANmain
-    void DBSCAN(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data)
+    void DBSCAN(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data, int param)
     {
-        
+        int DBminPts;
+            DBminPts=minPts/param;
+
+
+        clusterIndices.clear();
         pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud;
         cluster_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
         std::vector<pcl::PointIndices> clusterIndicesdata;
@@ -335,7 +370,7 @@ public:
         pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
         tree->setInputCloud(cloud_data->makeShared());
         ec.setClusterTolerance(eps);
-        ec.setMinClusterSize(minPts);
+        ec.setMinClusterSize(DBminPts);
         // ec.setMaxClusterSize(max_points_per_cluster);
         ec.setMaxClusterSize(cloud_data->size());
         ec.setSearchMethod(tree);
@@ -422,39 +457,39 @@ public:
     void testcolor(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data)
     {
         // printf("123");
-        // for(int i=0;i<cloud_data->size();i++){
-        //     pcl::PointXYZRGB colored_point;
-        //     colored_point.r = 255;
-        //     colored_point.g = 255;
-        //     colored_point.b = 255;
-        //     colored_point.x = cloud_data->points[i].x;
-        //     colored_point.y = cloud_data->points[i].y;
-        //     colored_point.z = cloud_data->points[i].z;
-        //     outputcloud->points.push_back(colored_point);      
-        // }
-
-        for (std::vector<pcl::PointIndices>::const_iterator it = clusterIndices.begin(); it != clusterIndices.end(); ++it)
-        {
-            // if (it->indices.size() < 200){
-            //     continue;
-            // }
+        for(int i=0;i<cloud_data->size();i++){
             pcl::PointXYZRGB colored_point;
-            colored_point.r = rand() % 256;
-            colored_point.g = rand() % 256;
-            colored_point.b = rand() % 256;
-            // ROS_INFO("passstartnum : %d", colored_point.r );
-            //  Iterate through each point in the cluster
-            for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
-            {
-                // Set point color
-                colored_point.x = cloud_data->points[*pit].x;
-                colored_point.y = cloud_data->points[*pit].y;
-                colored_point.z = cloud_data->points[*pit].z;
-
-                // Add colored point to new cloud
-                outputcloud->points.push_back(colored_point);
-            }
+            colored_point.r = 255;
+            colored_point.g = 255;
+            colored_point.b = 255;
+            colored_point.x = cloud_data->points[i].x;
+            colored_point.y = cloud_data->points[i].y;
+            colored_point.z = cloud_data->points[i].z;
+            outputcloud->points.push_back(colored_point);      
         }
+
+        // for (std::vector<pcl::PointIndices>::const_iterator it = clusterIndices.begin(); it != clusterIndices.end(); ++it)
+        // {
+        //     // if (it->indices.size() < 200){
+        //     //     continue;
+        //     // }
+        //     pcl::PointXYZRGB colored_point;
+        //     colored_point.r = rand() % 256;
+        //     colored_point.g = rand() % 256;
+        //     colored_point.b = rand() % 256;
+        //     // ROS_INFO("passstartnum : %d", colored_point.r );
+        //     //  Iterate through each point in the cluster
+        //     for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
+        //     {
+        //         // Set point color
+        //         colored_point.x = cloud_data->points[*pit].x;
+        //         colored_point.y = cloud_data->points[*pit].y;
+        //         colored_point.z = cloud_data->points[*pit].z;
+
+        //         // Add colored point to new cloud
+        //         outputcloud->points.push_back(colored_point);
+        //     }
+        // }
         // Set point cloud header
         // ROS_INFO("Output cloud contains %ld points", clusterIndices.size());
         outputcloud->width = outputcloud->points.size();
@@ -462,7 +497,7 @@ public:
         outputcloud->is_dense = true;
     }
 
-    void object_boxes(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud3D, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud2D)
+    void object_boxes(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud3D, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud2D, bool is_static)
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud;
         cluster_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
@@ -477,34 +512,41 @@ public:
         marker.action = visualization_msgs::Marker::ADD;
         marker.pose.orientation.w = 0;
         marker.scale.x = 0.01; // line width
-        marker.color.r = 1.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0;
-        marker.color.a = 1.0;
         marker.lifetime = ros::Duration();
         // Draw bounding boxes for each cluster
         int cluster_id = 0;
 
-        marker_array->markers.clear();
+        // marker_array->markers.clear();
 
         for (auto indices : clusterIndices)
         {
-            drawBoundingBox(marker, cloud3D, cloud2D, pcl::PointIndices::Ptr(new pcl::PointIndices(indices)), cluster_id++);
-            marker_array->markers.push_back(marker);
-            marker.points.clear();
+            if(drawBoundingBox(marker, cloud3D, cloud2D,is_static, pcl::PointIndices::Ptr(new pcl::PointIndices(indices)), cluster_id)){
+                cluster_id++;
+                if(is_static){
+                    marker_dynamic->markers.push_back(marker);   
+                }
+                else{
+                    marker_static->markers.push_back(marker);  
+                }
+                marker.points.clear();                
+            }
         }
-        printf("%d", cluster_id);
-        ROS_INFO("%d", marker_array->markers.size());
+        // smoothObjectBoxes({0,0,0,0},5,true);
+        
+        // printf("%d", cluster_id);
+
+        // ROS_INFO("static size :%d\n", marker_static->markers.size());
+        // ROS_INFO("dynamic size :%d\n", marker_dynamic->markers.size());
     }
 
-    void drawBoundingBox(visualization_msgs::Marker &marker, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud3D, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud2D, pcl::PointIndices::Ptr indices, int id)
+    bool drawBoundingBox(visualization_msgs::Marker &marker, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud3D, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud2D, bool is_static, pcl::PointIndices::Ptr indices, int id)
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud;
         cluster_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr rangecloud;
         rangecloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::copyPointCloud(*cloud2D, indices->indices, *cluster_cloud);
 
+        pcl::copyPointCloud(*cloud2D, indices->indices, *cluster_cloud);
         marker.id = id;
 
         pcl::MomentOfInertiaEstimation<pcl::PointXYZ> feature_extractor;
@@ -514,6 +556,18 @@ public:
         Eigen::Matrix3f rotational_matrix_OBB;
 
         feature_extractor.getOBB(min_point_OBB, max_point_OBB, position_OBB, rotational_matrix_OBB);
+
+        //判斷是否為動態物件
+        if(!is_static){
+            marker.color.r = 1.0;
+            marker.color.g = 0.0;
+            marker.color.b = 0.0;
+            marker.color.a = 1.0;
+            for(auto points:frame)
+                if(isInsideRectangle(points,position_OBB.x,position_OBB.y)){
+                    return false;
+                }
+        }
 
         // 投影OBB到XY平面
         Eigen::Vector3f x_axis, y_axis, z_axis;
@@ -539,10 +593,13 @@ public:
         crop_filter.setRotation(rotational_matrix_OBB.col(2));
         crop_filter.setTranslation(position_OBB_Eigen);
         crop_filter.filter(*rangecloud);
-
+        if(rangecloud->size()==0){
+            return false;
+        }
         pcl::PointXYZ min_point_box;
 
         pcl::PointXYZ max_point_box;
+
         pcl::getMinMax3D(*rangecloud, max_point_box, min_point_box);
         // printf("%ld", rangecloud->size());
         if (rangecloud->size() > 0)
@@ -561,8 +618,8 @@ public:
             min_point_box.z = -1;
             max_point_box.z = 3;
         }
-        // printf("%lf",rangecloud->points[1].z);
 
+        //輸出匡  
         Eigen::Vector3f p1(min_point_OBB.x, min_point_OBB.y, min_point_box.z);
         Eigen::Vector3f p2(min_point_OBB.x, max_point_OBB.y, min_point_box.z);
         Eigen::Vector3f p3(max_point_OBB.x, max_point_OBB.y, min_point_box.z);
@@ -572,6 +629,7 @@ public:
         Eigen::Vector3f p6(min_point_OBB.x, max_point_OBB.y, max_point_box.z);
         Eigen::Vector3f p7(max_point_OBB.x, max_point_OBB.y, max_point_box.z);
         Eigen::Vector3f p8(max_point_OBB.x, min_point_OBB.y, max_point_box.z);
+
         p1 = rotation_xy * p1 + center_xy;
         p2 = rotation_xy * p2 + center_xy;
         p3 = rotation_xy * p3 + center_xy;
@@ -580,6 +638,27 @@ public:
         p6 = rotation_xy * p6 + center_xy;
         p7 = rotation_xy * p7 + center_xy;
         p8 = rotation_xy * p8 + center_xy;
+
+
+        if(is_static){
+            // std::array<double, 8> rect1 = {p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p4[0],p4[1]};
+            frame.push_back({p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p4[0],p4[1]});
+            marker.color.r = 0.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+            marker.color.a = 1.0;
+        }
+        
+        else{
+            for(auto points:frame){
+                if(checkOverlap(points,{p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p4[0],p4[1]})){
+                    // printf("1 points = %lf %lf %lf %lf %lf %lf %lf %lf\n",points[0],points[1],points[2],points[3],points[4],points[5],points[6],points[7]);
+                    // printf("2 points = %lf %lf %lf %lf %lf %lf %lf %lf\n",p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p4[0],p4[1]);
+                    return true;
+                }                
+            }
+
+        }
 
         // 将OBB的12条边添加到Marker中
         addLine(marker, p1, p2);
@@ -593,7 +672,11 @@ public:
         addLine(marker, p1, p5);
         addLine(marker, p2, p6);
         addLine(marker, p3, p7);
-        addLine(marker, p4, p8);
+        addLine(marker, p4, p8);  
+
+    
+     
+        return true; 
     }
     void addLine(visualization_msgs::Marker &marker, Eigen::Vector3f p1, Eigen::Vector3f p2)
     {
@@ -649,7 +732,108 @@ public:
         ec.setInputCloud(cloud);
         ec.extract(clusterIndices);
     }
+
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr AddPointCloudToBufferAndSum(const pcl::PointCloud<pcl::PointXYZ>::Ptr& pointcloud, int BUFFER_SIZE) {
+        // 將點雲加入循環緩衝區
+        buffer.push_front(pointcloud);
+
+        // 如果循環緩衝區超過設定的大小，則刪除最舊的點雲
+        if (buffer.size() > BUFFER_SIZE) {
+            buffer.pop_back();
+        }
+
+        // 清空加總後的點雲
+        pcl::PointCloud<pcl::PointXYZ>::Ptr sumCloud;
+        sumCloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        // 將循環緩衝區中的點雲進行加總
+        for (const auto& cloud1 : buffer) {
+            for (const auto& point : *cloud1) {
+                sumCloud->push_back(point);
+            }
+        }
+        return sumCloud;
+    }
+
+    bool isInsideRectangle( const std::array<double, 8>& rectangle, double px, double py)
+    {
+        
+        double x1 = rectangle[0];
+        double y1 = rectangle[1];
+        double x2 = rectangle[2];
+        double y2 = rectangle[3];
+        double x3 = rectangle[4];
+        double y3 = rectangle[5];
+        double x4 = rectangle[6];
+        double y4 = rectangle[7];
+
+        // 检查点是否在矩形框的x范围内
+        if (px < std::min(x1, std::min(x2, std::min(x3, x4))) || px > std::max(x1, std::max(x2, std::max(x3, x4))))
+            return false;
+            
+        // 检查点是否在矩形框的y范围内
+        if (py < std::min(y1, std::min(y2, std::min(y3, y4))) || py > std::max(y1, std::max(y2, std::max(y3, y4))))
+            return false;
+
+        return true;
+    }
+        
+    // 檢查兩條線段是否相交
+    bool doSegmentsIntersect(Point p1, Point p2, Point p3, Point p4) {
+        double d1 = (p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x);
+        double d2 = (p4.x - p3.x) * (p2.y - p3.y) - (p4.y - p3.y) * (p2.x - p3.x);
+        double d3 = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+        double d4 = (p2.x - p1.x) * (p4.y - p1.y) - (p2.y - p1.y) * (p4.x - p1.x);
+
+        return (d1 * d2 < 0 && d3 * d4 < 0);
+    }
+
+    bool checkOverlap(const std::array<double, 8>& rect1, const std::array<double, 8>& rect2) {
+        std::array<Point, 4> rect1Points = {{
+            {rect1[0], rect1[1]},
+            {rect1[2], rect1[3]},
+            {rect1[4], rect1[5]},
+            {rect1[6], rect1[7]}
+        }};
+
+        std::array<Point, 4> rect2Points = {{
+            {rect2[0], rect2[1]},
+            {rect2[2], rect2[3]},
+            {rect2[4], rect2[5]},
+            {rect2[6], rect2[7]}
+        }};
+
+        // 檢查所有線段是否相交
+        for (int i = 0; i < 4; i++) {
+            int j = (i + 1) % 4;
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4;
+                if (doSegmentsIntersect(rect1Points[i], rect1Points[j], rect2Points[k], rect2Points[l])) {
+                    return true;  // 相交，有重疊
+                }
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            int j = (i + 2) ;
+            for (int k = 0; k < 2; k++) {
+                int l = (k + 2) ;
+                if (doSegmentsIntersect(rect1Points[i], rect1Points[j], rect2Points[k], rect2Points[l])) {
+                    return true;  // 相交，有重疊
+                }
+            }
+        }
+        return false;  // 沒有重疊
+    }
+
+
+
+
+
 };
+
+
+
+
+
 
 PointCloud PCM;
 
@@ -670,11 +854,14 @@ void cloudPublish(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud)
     output_cloud.header = msg_header;
     cloud_pub.publish(output_cloud);
 }
-void makerPublish(visualization_msgs::MarkerArray::Ptr markerarray)
+void makerPublish(ros::Publisher marker_pub, visualization_msgs::MarkerArray::Ptr markerarray)
 {
     // ROS_INFO("%c",markerarray->markers.size());
-    visualization_msgs::MarkerArray empty_marker_array;
-    marker_pub.publish(empty_marker_array);
+    visualization_msgs::Marker marker;
+    marker.header = msg_header;
+    marker.header.stamp = ros::Time::now();
+    marker.action = visualization_msgs::Marker::DELETEALL;
+    marker_pub.publish(marker);
     marker_pub.publish(*markerarray);
 }
 void PCAPublish(pcl::PointCloud<pcl::Normal>::Ptr cloud_normals, std::list<pcl::Normal> normal_list)
@@ -685,8 +872,10 @@ void PCAPublish(pcl::PointCloud<pcl::Normal>::Ptr cloud_normals, std::list<pcl::
     marker.header.stamp = ros::Time::now();
     marker.ns = "point_cloud_normals";
     marker.action = visualization_msgs::Marker::DELETEALL;
+    marker_pub2.publish(marker);
     marker.type = visualization_msgs::Marker::ARROW;
     marker.action = visualization_msgs::Marker::ADD;
+    
     marker.scale.x = 0.01;
     marker.scale.y = 0.02;
     marker.scale.z = 0.1;
@@ -728,15 +917,18 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "pcl");
     ros::NodeHandle nh;
     sub = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points", 1, cloudCallback);
+    // sub = nh.subsc   ribe<sensor_msgs::PointCloud2>("/yrl_pub/yrl_cloud", 1, cloudCallback);
+
     cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/output_cloud", 1);
     marker_pub2 = nh.advertise<visualization_msgs::Marker>("point_cloud_normals", 1);
-    marker_pub = nh.advertise<visualization_msgs::MarkerArray>("object_bounding_boxes", 10000);
+    ros::Publisher S_marker_pub = nh.advertise<visualization_msgs::MarkerArray>("dynamic_object_boxes", 10000);
+    ros::Publisher D_marker_pub = nh.advertise<visualization_msgs::MarkerArray>("static_object_boxes", 10000);
     ros::Publisher marker_pub3 = nh.advertise<visualization_msgs::Marker>("output", 1);
     dynamic_reconfigure::Server<dynamic_object_detection::pointcloudConfig> server;
     dynamic_reconfigure::Server<dynamic_object_detection::pointcloudConfig>::CallbackType f;
     f = boost::bind(&callback, _1, _2);
     server.setCallback(f);
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point3D, point2D, pointcp;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point3D, point2D, pointcp , pointmap,pointmapmove;
     std::vector<pcl::PointIndices> dbscan_data;
     ros::Rate loop_rate(ros_hz);
     clock_t start_time, end_time;
@@ -748,59 +940,63 @@ int main(int argc, char **argv)
         {
             start_time = clock();
             point3D = PCM.start(input_cloud_data, msg_header);
-
             point3D = PCM.PassThroughFilter(point3D);
-            
             point3D = PCM.Points_Simplification(point3D, false);
-            // PCM.PCA(point_data);
             // PCAPublish(PCM.cloud_normals,PCM.normal_list);
-
-            // std::cout << "The shared point cloud contains " << point_data->size() << " points." << std::endl;
-            // PCM.PassThroughFilter(point_data);
-            // PCM.Points_Simplification(point_data, false);
             point3D = PCM.StatisticalOutlier(point3D);
-            // printf("size : %ld\n",point3D->size());
-            // PCM.testcolor(point3D);
-            // PCM.testcolor(point3D);
-            // PCM.RANSAC(point3D);
-            // PCM.NoGround(point3D);
 
             point2D = PCM.ProjectInliers(point3D);
+
+            // printf("\nsize: %ld\n",point2D->size());
             // point2D = PCM.StatisticalOutlier(point2D);
             // PCM.testcolor(point2D);
-            // // std::cout << "The 1 " << point_data->size() << " points." << std::endl;
             // // PCM.StatisticalOutlier(point2D);
-            PCM.RadiusOutlierRemoval(point2D);
-            // // std::cout << "The 2 " << point_data->size() << " points." << std::endl;
+            pointcp=PCM.RadiusOutlierRemoval(point2D,3);
             
-            // // std::cout << "The 1 " << point2D->size() << " points." << std::endl; 
-            // // point2D = PCM.Points_Simplification(point2D, true);
-            // // std::cout << "The 2 " << point2D->size() << " points." << std::endl;
-            
-            // // PCM.TransformedCloud(point_data);
-
-
+            // PCM.dymap(pointmap,1);
+            // printf("\nsize: %ld\n",point2D->size());
+            // point2D = PCM.RadiusOutlierRemoval(point2D);;
+            // printf("\nsize: %ld\n",point2D->size());
+            pointmap =PCM.AddPointCloudToBufferAndSum(pointcp,20);
+            pointmapmove=PCM.RadiusOutlierRemoval(pointmap,30);
+            pointmapmove = PCM.Points_Simplification(pointmapmove, true);
             // if (pointcp==nullptr ){
             //     pointcp = point2D;
             // }
 
             // pointcp = PCM.TemporalSmoothing(point2D, pointcp);            
             // PCM.testcolor(point2D);
-            PCM.DBSCAN(point2D);
-            // PCM.Eu(point2D);
-            PCM.object_boxes(point3D, point2D);
-            makerPublish(PCM.marker_array);
+            // PCM.DBSCAN(point2D);
+            PCM.DBSCAN(pointmapmove,3);
+            PCM.object_boxes(point3D, pointmapmove,true);            
+            point2D = PCM.RadiusOutlierRemoval(point2D);
+            PCM.DBSCAN(point2D,1);
+            PCM.object_boxes(point3D, point2D,false);
+            
 
-            PCM.testcolor(point2D);
+            // PCM.object_boxes(point3D, point2D,true);
+            printf("  D size = %ld\n",PCM.marker_static->markers.size());
+            makerPublish(S_marker_pub,PCM.marker_static);
+            makerPublish(D_marker_pub,PCM.marker_dynamic);
+            // PCM.Eu(point2D);
+            // PCM.DBSCAN(point2D); 
+            // PCM.object_boxes(point3D, point2D);
+            // makerPublish(PCM.marker_array);
+
+            // printf("\nsize: %ld\n",pointmap->size());
+            PCM.testcolor(pointmapmove);
             cloudPublish(PCM.outputcloud);
-            // std::cout << "The shared point cloud contains " << point_data->size() << " points." << std::endl;
             end_time = clock();
             total_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
             cout << "The total time is: " << total_time << " seconds." << endl;
+
+            
+
         }
         // ros::spinOnce();
         loop_rate.sleep();
     }
+    // PCM.outimages();
     ros::spin();
     return 0;
 }

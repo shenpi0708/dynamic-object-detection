@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_ros
   tf
   dynamic_reconfigure
+  OpenCV
 )
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -120,8 +121,10 @@ catkin_package(
 ## Your package locations should be listed before other locations
 include_directories(
 # include
+
   ${catkin_INCLUDE_DIRS}
   ${INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
   /usr/include/pcl-1.8
   #/usr/include/eigen3/Eigen
 )
