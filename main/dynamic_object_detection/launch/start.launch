@@ -1,0 +1,7 @@
+<launch>
+  <!-- Launch velodyne_pointcloud node -->
+  <node pkg="velodyne_pointcloud" type="VLP16_points" name="velodyne_node" output="screen" />
+
+  <!-- Launch dynamic_object_detection node -->
+  <node pkg="dynamic_object_detection" type="method" name="detection_node" output="screen" />
+</launch>
