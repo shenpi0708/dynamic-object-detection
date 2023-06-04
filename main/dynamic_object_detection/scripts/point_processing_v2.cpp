@@ -381,6 +381,7 @@ public:
             if (it->indices.size() > max_points_per_cluster)
             {
                 // 將聚類中的點提取出來，用於二次聚類
+                pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZ>);
                 for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
                 {
                     cluster_cloud->points.push_back(cloud_data->points[*pit]);
