@@ -225,16 +225,18 @@ public:
     // 統計濾波器
     pcl::PointCloud<pcl::PointXYZ>::Ptr StatisticalOutlier(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data)
     {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_copy(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::copyPointCloud(*cloud_data, *cloud_copy);
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_copy(new pcl::PointCloud<pcl::PointXYZ>);
+        // pcl::copyPointCloud(*cloud_data, *cloud_copy);
         // printf("sizeF : %ld\n",cloud_data->size());
         sor2.setInputCloud(cloud_data->makeShared());
         sor2.setMeanK(MeanK);               // Set number of neighbors to be considered for averaging
         sor2.setNegative(false);
         sor2.setStddevMulThresh(MulThresh); // Set standard deviation multiplier
+        pcl::PointCloud<pcl::PointXYZ>::Ptr filteredCloud(new pcl::PointCloud<pcl::PointXYZ>);
+    
+        sor2.filter(*filteredCloud);
 
-
-        return cloud_data;
+        return filteredCloud;
     }
 
     // 地面演算法(sample consensus)
@@ -973,7 +975,7 @@ int main(int argc, char **argv)
     dynamic_reconfigure::Server<dynamic_object_detection::pointcloudConfig>::CallbackType f;
     f = boost::bind(&callback, _1, _2);
     server.setCallback(f);
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point3D, point2D, pointcp , pointmap,pointmapmove;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point3D, point2D, pointcp , pointmap,pointmapmove, print;
     // std::vector<pcl::PointIndices> dbscan_data;
     ros::Rate loop_rate(ros_hz);
     clock_t start_time, end_time;
@@ -988,7 +990,7 @@ int main(int argc, char **argv)
             point3D = PCM.PassThroughFilter(point3D);
             point3D = PCM.Points_Simplification(point3D, false);
             // PCAPublish(PCM.cloud_normals,PCM.normal_list);
-            point3D = PCM.StatisticalOutlier(point3D);
+            // point3D = PCM.StatisticalOutlier(point3D);
             PCM.RANSAC(point3D);
             PCM.NoGround(point3D);//!!!
             point2D = PCM.ProjectInliers(point3D);
@@ -997,15 +999,16 @@ int main(int argc, char **argv)
             // point2D = PCM.StatisticalOutlier(point2D);
             // PCM.testcolor(point2D);
             // // PCM.StatisticalOutlier(point2D);
-            pointcp=PCM.RadiusOutlierRemoval(point2D,3);
-            
+            point2D=PCM.RadiusOutlierRemoval(point2D,3);
+            // point2D = PCM.StatisticalOutlier(point2D);
             // PCM.dymap(pointmap,1);
             // printf("\nsize: %ld\n",point2D->size());
             // point2D = PCM.RadiusOutlierRemoval(point2D);;
             // printf("\nsize: %ld\n",point2D->size());
-            pointmap =PCM.AddPointCloudToBufferAndSum(pointcp,20);
-            pointmapmove=PCM.RadiusOutlierRemoval(pointmap,30);
-            pointmapmove = PCM.Points_Simplification(pointmapmove, true);
+            pointmap =PCM.AddPointCloudToBufferAndSum(point2D,20);
+            print=PCM.RadiusOutlierRemoval(pointmap,30);
+            // print = PCM.StatisticalOutlier(pointmap);
+            pointmapmove = PCM.Points_Simplification(print, true);
             // if (pointcp==nullptr ){
             //     pointcp = point2D;
             // }
