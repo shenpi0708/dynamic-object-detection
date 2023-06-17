@@ -50,6 +50,7 @@
 #include <tf/transform_broadcaster.h>
 #include <pcl/registration/icp.h>
 
+
 ros::Publisher cloud_pub;
 // ros::Publisher marker_pub;
 ros::Publisher marker_pub2;
@@ -115,10 +116,13 @@ public:
     std::vector<float> mapData;
     int validFrames = 0;
     std::vector<std::array<double, 8>> frame;
+    std::vector<std::array<float, 3>> centerpoint;
+    std::array<float, 3> point123={0,0,0};
     struct Point {
         double x, y;
     };
-
+    int TT=0;
+    int ii=1;
     // 初始化參數
     PointCloud()
     {
@@ -140,6 +144,7 @@ public:
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr start(const sensor_msgs::PointCloud2::ConstPtr &input_cloud, std_msgs::Header header_msg)
     {
+        TT++;
         frame.clear();
         outputcloud->clear();
         outputcloudg->clear();
@@ -250,7 +255,7 @@ public:
         sac.setDistanceThreshold(0.05);
         sac.setMaxIterations(1000);
         // sac.setInputNormals(cloud_normals);
-        sac.setProbability(0.95);
+        sac.setProbability(0.97);
         sac.segment(*inliers, *coefficients);
     }
 
@@ -459,39 +464,43 @@ public:
     void testcolor(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_data)
     {
         // printf("123");
-        for(int i=0;i<cloud_data->size();i++){
-            pcl::PointXYZRGB colored_point;
-            colored_point.r = 255;
-            colored_point.g = 255;
-            colored_point.b = 255;
-            colored_point.x = cloud_data->points[i].x;
-            colored_point.y = cloud_data->points[i].y;
-            colored_point.z = cloud_data->points[i].z;
-            outputcloud->points.push_back(colored_point);      
-        }
-
-        // for (std::vector<pcl::PointIndices>::const_iterator it = clusterIndices.begin(); it != clusterIndices.end(); ++it)
-        // {
-        //     // if (it->indices.size() < 200){
-        //     //     continue;
-        //     // }
+        // for(int i=0;i<cloud_data->size();i++){
         //     pcl::PointXYZRGB colored_point;
-        //     colored_point.r = rand() % 256;
-        //     colored_point.g = rand() % 256;
-        //     colored_point.b = rand() % 256;
-        //     // ROS_INFO("passstartnum : %d", colored_point.r );
-        //     //  Iterate through each point in the cluster
-        //     for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
-        //     {
-        //         // Set point color
-        //         colored_point.x = cloud_data->points[*pit].x;
-        //         colored_point.y = cloud_data->points[*pit].y;
-        //         colored_point.z = cloud_data->points[*pit].z;
-
-        //         // Add colored point to new cloud
-        //         outputcloud->points.push_back(colored_point);
-        //     }
+        //     colored_point.r = 0;
+        //     colored_point.g = 0;
+        //     colored_point.b = 0;
+        //     colored_point.x = cloud_data->points[i].x;
+        //     colored_point.y = cloud_data->points[i].y;
+        //     colored_point.z = cloud_data->points[i].z;
+        //     outputcloud->points.push_back(colored_point);      
         // }
+
+        for (std::vector<pcl::PointIndices>::const_iterator it = clusterIndices.begin(); it != clusterIndices.end(); ++it)
+        {
+            // if (it->indices.size() < 200){
+            //     continue;
+            // }
+            pcl::PointXYZRGB colored_point;
+
+            colored_point.r = rand() % 128;   // 設定紅色值為 0-127
+            colored_point.g = rand() % 128;   // 設定綠色值為 0-127
+            colored_point.b = rand() % 128;   // 設定藍色值為 0-127
+            // colored_point.r = rand() % 256;
+            // colored_point.g = rand() % 256;
+            // colored_point.b = rand() % 256;
+            // ROS_INFO("passstartnum : %d", colored_point.r );
+            //  Iterate through each point in the cluster
+            for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
+            {
+                // Set point color
+                colored_point.x = cloud_data->points[*pit].x;
+                colored_point.y = cloud_data->points[*pit].y;
+                colored_point.z = cloud_data->points[*pit].z;
+
+                // Add colored point to new cloud
+                outputcloud->points.push_back(colored_point);
+            }
+        }
         // Set point cloud header
         // ROS_INFO("Output cloud contains %ld points", clusterIndices.size());
         outputcloud->width = outputcloud->points.size();
@@ -585,7 +594,30 @@ public:
         Eigen::Matrix3f rotation_xy;
         rotation_xy << x_axis.normalized(), y_axis.normalized(), z_axis.normalized();
         Eigen::Vector3f center_xy(position_OBB.x, position_OBB.y, min_point_OBB.z);
+        Eigen::Vector3f angles = rotation_xy.eulerAngles(0, 1, 2)* 180.0 / M_PI;
 
+        
+        if (TT==1&&id==5   ) {
+            centerpoint.push_back({position_OBB.x,position_OBB.y,angles[2]});
+        }
+        else if(TT!=1){
+            if(ii<TT){
+                centerpoint.push_back(point123);
+                point123={99,99,99};
+                ii++;
+            }
+            // printf("%f\n",std::sqrt(std::pow(centerpoint.back()[0] - position_OBB.x, 2) + std::pow(position_OBB.y - centerpoint.back()[1], 2)));
+            if(std::sqrt(std::pow(centerpoint.back()[0] - position_OBB.x, 2) + std::pow(position_OBB.y - centerpoint.back()[1], 2))<1.3){
+                // printf("A:%f B: %f\n",std::sqrt(std::pow(centerpoint.back()[0] - position_OBB.x, 2) + std::pow(position_OBB.y - centerpoint.back()[1], 2)),std::sqrt(std::pow(centerpoint.back()[0] - point123[0], 2) + std::pow(point123[1] - centerpoint.back()[1], 2)));
+                if(std::sqrt(std::pow(centerpoint.back()[0] - position_OBB.x, 2) + std::pow(position_OBB.y - centerpoint.back()[1], 2))<std::sqrt(std::pow(centerpoint.back()[0] - point123[0], 2) + std::pow(point123[1] - centerpoint.back()[1], 2)))
+                    point123={position_OBB.x,position_OBB.y,angles[2]};
+            }
+            
+
+        }
+        
+            
+        // printf("%f %f %f\n",angles[0],angles[1],angles[2]);
         // 计算点云在Z轴上的AABB
         // pcl::PointXYZ min_point_Z, max_point_Z;
         // pcl::copyPointCloud(*cloud3D, indices->indices, *cluster_cloud);
@@ -634,6 +666,16 @@ public:
         Eigen::Vector3f p6(min_point_OBB.x, max_point_OBB.y, max_point_box.z);
         Eigen::Vector3f p7(max_point_OBB.x, max_point_OBB.y, max_point_box.z);
         Eigen::Vector3f p8(max_point_OBB.x, min_point_OBB.y, max_point_box.z);
+
+        // Eigen::Vector3f p1(min_point_OBB.x, min_point_OBB.y, 0);
+        // Eigen::Vector3f p2(min_point_OBB.x, max_point_OBB.y, 0);
+        // Eigen::Vector3f p3(max_point_OBB.x, max_point_OBB.y, 0);
+        // Eigen::Vector3f p4(max_point_OBB.x, min_point_OBB.y, 0);
+
+        // Eigen::Vector3f p5(min_point_OBB.x, min_point_OBB.y, 0);
+        // Eigen::Vector3f p6(min_point_OBB.x, max_point_OBB.y, 0);
+        // Eigen::Vector3f p7(max_point_OBB.x, max_point_OBB.y, 0);
+        // Eigen::Vector3f p8(max_point_OBB.x, min_point_OBB.y, 0);
 
         p1 = rotation_xy * p1 + center_xy;
         p2 = rotation_xy * p2 + center_xy;
@@ -950,7 +992,7 @@ void pubplane(ros::Publisher marker_pub,pcl::ModelCoefficients::Ptr a)
     marker.color.b = 0.0;
     marker.color.a = 0.5;
     marker.lifetime = ros::Duration();  // 持久存在，不自動刪除
-    printf("123");
+    // printf("123");
     // 發布Marker消息
     marker_pub.publish(marker);
 }
@@ -989,17 +1031,17 @@ int main(int argc, char **argv)
             point3D = PCM.start(input_cloud_data, msg_header);
             point3D = PCM.PassThroughFilter(point3D);
             point3D = PCM.Points_Simplification(point3D, false);
+            // PCM.testcolor(point3D);
             // PCAPublish(PCM.cloud_normals,PCM.normal_list);
             // point3D = PCM.StatisticalOutlier(point3D);
             PCM.RANSAC(point3D);
             PCM.NoGround(point3D);//!!!
             point2D = PCM.ProjectInliers(point3D);
-
+            // point2D=PCM.RadiusOutlierRemoval(point2D,3);
             // printf("\nsize: %ld\n",point2D->size());
             // point2D = PCM.StatisticalOutlier(point2D);
             // PCM.testcolor(point2D);
             // // PCM.StatisticalOutlier(point2D);
-            point2D=PCM.RadiusOutlierRemoval(point2D,3);
             // point2D = PCM.StatisticalOutlier(point2D);
             // PCM.dymap(pointmap,1);
             // printf("\nsize: %ld\n",point2D->size());
@@ -1015,12 +1057,12 @@ int main(int argc, char **argv)
 
             // pointcp = PCM.TemporalSmoothing(point2D, pointcp);            
             // PCM.testcolor(point2D);
-            // PCM.DBSCAN(point2D);
             PCM.DBSCAN(pointmapmove,3);
-            PCM.object_boxes(point3D, pointmapmove,true);            
-            point2D = PCM.RadiusOutlierRemoval(point2D);
-            PCM.DBSCAN(point2D,1);
-            PCM.object_boxes(point3D, point2D,false);
+            PCM.object_boxes(point3D, pointmapmove,true); 
+            // PCM.testcolor(point3D);
+            // point2D = PCM.RadiusOutlierRemoval(point2D);
+            // PCM.DBSCAN(point2D,1);
+            // PCM.object_boxes(point3D, point2D,false);
             
 
             // PCM.object_boxes(point3D, point2D,true);
@@ -1033,8 +1075,7 @@ int main(int argc, char **argv)
             // makerPublish(PCM.marker_array);
 
             // printf("\nsize: %ld\n",pointmap->size());
-            PCM.testcolor(point2D);
-
+            // PCM.testcolor(pointmapmove);
             
             cloudPublish(PCM.outputcloud);
             end_time = clock();
@@ -1048,6 +1089,27 @@ int main(int argc, char **argv)
         loop_rate.sleep();
     }
     // PCM.outimages();
+    std::string fileName = "output.txt";
+
+    // 開啟檔案供寫入
+    std::ofstream outputFile(fileName);
+
+    if (outputFile.is_open()) {
+        // 遍歷centerpoint向量的每個元素
+        for (const std::array<float, 3>& point : PCM.centerpoint) {
+            // 將每個元素的值寫入檔案中，以空格分隔
+            for (const float value : point) {
+                outputFile << value << " ";
+            }
+            outputFile << std::endl; // 在每個元素的值後換行
+        }
+
+        outputFile.close(); // 關閉檔案
+        std::cout << "成功將資料寫入檔案" << std::endl;
+    } else {
+        std::cerr << "無法開啟檔案" << std::endl;
+    }
+    
     ros::spin();
     return 0;
 }
