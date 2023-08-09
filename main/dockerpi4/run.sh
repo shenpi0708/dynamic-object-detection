@@ -3,7 +3,7 @@
 # Get dependent parameters
 source "$(dirname "$(readlink -f "${0}")")/get_param.sh"
 
-docker run --rm \
+docker run  --rm\
     --privileged \
     --network=host \
     --ipc=host \
