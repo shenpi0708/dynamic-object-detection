@@ -1,7 +1,6 @@
 <launch>
   <!-- Launch rviz -->
-  <node pkg="rviz" type="rviz" name="rviz_node" args=" -d $(find your_package_name)/src/main/aaa.rviz" output="screen"/>
-
+    <node pkg="rviz" type="rviz" name="rviz_node" args=" -d $(find dynamic_object_detection)/aaa.rviz" output="screen"/>
   <!-- Launch rqt -->
   <node pkg="rqt_gui" type="rqt_gui" name="rqt_gui_node" output="screen"/>
 </launch>
